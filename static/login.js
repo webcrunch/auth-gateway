@@ -22,7 +22,11 @@
       button.disabled = false;
       return;
     }
-    say('Godkänn inloggningen i Telegram…');
+    let code = '';
+    try { code = (await response.json()).code || ''; } catch (e) { code = ''; }
+    say(code
+      ? 'Kod: ' + code + '. Godkänn i Telegram bara om meddelandet där visar samma kod.'
+      : 'Godkänn inloggningen i Telegram…');
     const started = Date.now();
     const poll = async () => {
       if (Date.now() - started > 5 * 60 * 1000) {

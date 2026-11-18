@@ -39,6 +39,9 @@ the gateway's answer, but a request that goes around Traefik could set it itself
 - After login the browser goes back to the page it asked for, but only to `https://` on
   `jarllindquist.com` or a subdomain of it.
 - `POST /auth/login` and `/auth/logout` only from the page's own origin.
+- Each login request gets a 4-character code, shown on the page and, with the requester's IP, in the
+  Telegram message. Approve only when the codes match: a request someone else started has another code.
+- Logout ends the session in n8n (`session-end`), so a copied cookie stops working at once.
 
 Settings (environment): `N8N_WEBHOOK_URL`, `MAGIC_LINK_APP` (`ops`), `COOKIE_DOMAIN`
 (`jarllindquist.com`), `PUBLIC_ORIGIN` (`https://jarllindquist.com`), `OPS_USER` (`admin`, the

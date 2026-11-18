@@ -40,6 +40,11 @@ class FakeN8n:
             return FakeResponse(200, {"sessionId": "pending-123"})
         if path == "check-login-status":
             return FakeResponse(200, {"authenticated": json["sessionId"] in self.approved})
+        if path == "session-end":
+            sid = (headers or {}).get("X-Admin-Session")
+            ended = sid in self.valid_sessions and json == {"app": "ops"}
+            self.valid_sessions.discard(sid)
+            return FakeResponse(200, {"ended": ended})
         raise AssertionError("unexpected n8n call " + path)
 
 
@@ -142,9 +147,10 @@ def test_login_request_needs_our_origin(client, n8n):
 
 
 def test_login_request_asks_n8n_for_app_ops_and_keeps_the_pending_id(client, n8n):
-    r = client.post("/auth/login", headers={"Origin": ORIGIN})
+    r = client.post("/auth/login", headers={"Origin": ORIGIN, "X-Real-Ip": "203.0.113.9"})
     assert r.status_code == 200
-    assert n8n.calls == [("request-magic-link", {"app": "ops"}, {})]
+    code = r.get_json()["code"]
+    assert n8n.calls == [("request-magic-link", {"app": "ops", "code": code, "ip": "203.0.113.9"}, {})]
     cookie = r.headers["Set-Cookie"]
     assert cookie.startswith("ops_pending=pending-123")
     for part in ("HttpOnly", "Secure", "SameSite=Strict", "Path=/auth"):
@@ -243,3 +249,47 @@ def test_no_tools_configured_shows_no_list(client, n8n, monkeypatch):
     monkeypatch.setattr(gateway, "TOOLS", "")
     r = client.get("/auth/login", headers={"Cookie": "ops_session=good-session"})
     assert b'class="tools"' not in r.data and b"Logga ut" in r.data
+
+
+# --- the code shown on the page and in Telegram ---
+
+def test_the_code_is_four_unambiguous_characters_and_new_each_time(client, n8n):
+    codes = {client.post("/auth/login", headers={"Origin": ORIGIN}).get_json()["code"] for _ in range(20)}
+    assert len(codes) > 15  # random, not repeated
+    for code in codes:
+        assert len(code) == 4 and all(c in gateway.CODE_ALPHABET for c in code)
+        assert not set(code) & set("01OI")
+
+
+def test_a_strange_ip_header_is_not_passed_on(client, n8n):
+    client.post("/auth/login", headers={"Origin": ORIGIN, "X-Real-Ip": "1.2.3.4; <b>"})
+    assert n8n.calls[-1][1]["ip"] == ""
+
+
+def test_no_ip_header_sends_an_empty_ip(client, n8n):
+    client.post("/auth/login", headers={"Origin": ORIGIN})
+    assert n8n.calls[-1][1]["ip"] == ""
+
+
+# --- logout ends the session in n8n ---
+
+def test_logout_ends_the_session_in_n8n(client, n8n):
+    client.post("/auth/logout", headers={"Origin": ORIGIN, "Cookie": "ops_session=good-session"})
+    assert ("session-end", {"app": "ops"}, {"X-Admin-Session": "good-session"}) in n8n.calls
+    # the same cookie, copied before the logout, no longer gets through
+    r = client.get("/auth/verify", headers=forwarded(cookie="good-session"))
+    assert r.status_code == 302
+
+
+def test_logout_without_a_cookie_asks_n8n_nothing(client, n8n):
+    client.post("/auth/logout", headers={"Origin": ORIGIN})
+    assert n8n.calls == []
+
+
+def test_logout_works_when_n8n_is_down(client, monkeypatch):
+    def down(*args, **kwargs):
+        raise requests.ConnectionError("n8n is down")
+
+    monkeypatch.setattr(gateway.requests, "post", down)
+    r = client.post("/auth/logout", headers={"Origin": ORIGIN, "Cookie": "ops_session=good-session"})
+    assert r.status_code == 303 and r.headers["Set-Cookie"].startswith("ops_session=;")

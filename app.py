@@ -11,6 +11,7 @@ covers every subdomain.
 """
 
 import os
+import secrets
 import threading
 import time
 from urllib.parse import quote, urlsplit
@@ -107,6 +108,20 @@ def safe_return(url: str | None) -> str | None:
     return url
 
 
+# The code shown on the login page and in the Telegram message: 4 characters, no look-alikes (0/O, 1/I)
+CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def new_code() -> str:
+    return "".join(secrets.choice(CODE_ALPHABET) for _ in range(4))
+
+
+def client_ip() -> str:
+    """The visitor's address as Traefik saw it (X-Real-Ip), for the Telegram message."""
+    ip = request.headers.get("X-Real-Ip", "").strip()
+    return ip if 3 <= len(ip) <= 45 and all(c in "0123456789abcdefABCDEF:." for c in ip) else ""
+
+
 def same_origin() -> bool:
     return request.headers.get("Origin") == PUBLIC_ORIGIN
 
@@ -157,7 +172,10 @@ def login_request():
     if not same_origin():
         return jsonify({"error": "origin"}), 403
     try:
-        response = n8n("request-magic-link", timeout=10, json={"app": MAGIC_LINK_APP})
+        code = new_code()
+        # The code and IP are shown in Telegram, so a request you didn't make stands out
+        response = n8n("request-magic-link", timeout=10,
+                       json={"app": MAGIC_LINK_APP, "code": code, "ip": client_ip()})
         if response.status_code == 429:
             return jsonify({"error": "too_many"}), 429
         session_id = response.json().get("sessionId")
@@ -165,7 +183,7 @@ def login_request():
         session_id = None
     if not session_id:
         return jsonify({"error": "failed"}), 502
-    result = jsonify({"sent": True})
+    result = jsonify({"sent": True, "code": code})
     result.set_cookie(PENDING_COOKIE, session_id, max_age=PENDING_MAX_AGE, path="/auth",
                       secure=True, httponly=True, samesite="Strict")
     return result
@@ -197,6 +215,12 @@ def logout():
     session_id = request.cookies.get(SESSION_COOKIE)
     with _checks_lock:
         _checks.pop(session_id, None)
+    # End the session in n8n too, so a copied cookie stops working at once (not only after 15 idle minutes)
+    if session_id and len(session_id) <= 200:
+        try:
+            n8n("session-end", json={"app": MAGIC_LINK_APP}, headers={"X-Admin-Session": session_id})
+        except requests.RequestException:
+            pass  # the cookie is removed anyway; n8n ends the session after 15 idle minutes
     result = redirect("/auth/login", 303)
     result.delete_cookie(SESSION_COOKIE, domain=COOKIE_DOMAIN, path="/", secure=True, httponly=True, samesite="Lax")
     return result
