@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Logga in | Serververktyg</title>
+  <link rel="stylesheet" href="/auth/static/login.css">
+</head>
+<body>
+  <main class="card">
+    <h1>Serververktyg</h1>
+    {% if logged_in %}
+      <p>Du är inloggad. Inloggningen gäller Grafana, ChirpStack och de andra verktygen på servern.</p>
+      <form method="post" action="/auth/logout">
+        <button type="submit" class="secondary">Logga ut</button>
+      </form>
+    {% else %}
+      <p>Inloggningen godkänns i Telegram. Tryck på knappen och godkänn förfrågan som kommer dit.</p>
+      <button type="button" id="send" data-rd="{{ rd }}">Skicka inloggning till Telegram</button>
+      <p id="status" role="status" aria-live="polite"></p>
+    {% endif %}
+  </main>
+  <script src="/auth/static/login.js"></script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+# Production: the image is built and tested in GitHub Actions and pulled from Docker Hub.
+#
+# Traefik sends jarllindquist.com/auth/* here (the login page), and every service that should be
+# locked uses the middleware defined below:
+#   - "traefik.http.routers.<name>.middlewares=ops-auth@docker"
+# Traefik then asks /auth/verify before each request; 200 lets it through with X-WEBAUTH-USER set
+# (replacing anything the browser sent), anything else sends the browser to the login page.
+services:
+  auth-gateway:
+    image: passwordnotsafe/auth-gateway:latest
+    container_name: auth-gateway
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.auth-gateway.rule=Host(`jarllindquist.com`) && PathPrefix(`/auth`)"
+      - "traefik.http.routers.auth-gateway.entrypoints=websecure"
+      - "traefik.http.routers.auth-gateway.tls.certresolver=myresolver"
+      - "traefik.http.services.auth-gateway.loadbalancer.server.port=8000"
+      - "traefik.http.middlewares.ops-auth.forwardauth.address=http://auth-gateway:8000/auth/verify"
+      - "traefik.http.middlewares.ops-auth.forwardauth.authResponseHeaders=X-WEBAUTH-USER"
+    networks:
+      - traefik-net
+
+networks:
+  traefik-net:
+    external: true

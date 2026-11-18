@@ -1,0 +1,217 @@
+"""auth-gateway with n8n replaced by a fake: no test reaches the real login flow or Telegram."""
+
+from urllib.parse import parse_qs, unquote, urlsplit
+
+import pytest
+import requests
+
+import app as gateway
+
+ORIGIN = "https://jarllindquist.com"
+
+
+class FakeResponse:
+    def __init__(self, status=200, body=None):
+        self.status_code = status
+        self._body = body if body is not None else {}
+
+    def json(self):
+        return self._body
+
+
+class FakeN8n:
+    """Records each call and answers per webhook path."""
+
+    def __init__(self):
+        self.calls = []
+        self.valid_sessions = {"good-session"}
+        self.approved = set()
+        self.magic_link_status = 200
+
+    def __call__(self, url, json=None, headers=None, timeout=None):
+        path = url.rsplit("/", 1)[-1]
+        self.calls.append((path, json, headers or {}))
+        if path == "session-check":
+            ok = (headers or {}).get("X-Admin-Session") in self.valid_sessions and json == {"app": "ops"}
+            return FakeResponse(200, {"valid": ok})
+        if path == "request-magic-link":
+            if self.magic_link_status != 200:
+                return FakeResponse(self.magic_link_status, {})
+            return FakeResponse(200, {"sessionId": "pending-123"})
+        if path == "check-login-status":
+            return FakeResponse(200, {"authenticated": json["sessionId"] in self.approved})
+        raise AssertionError("unexpected n8n call " + path)
+
+
+@pytest.fixture
+def n8n(monkeypatch):
+    fake = FakeN8n()
+    monkeypatch.setattr(gateway.requests, "post", fake)
+    gateway._checks.clear()
+    return fake
+
+
+@pytest.fixture
+def client():
+    # Cookies are given as headers in each test, so the client keeps no cookie jar of its own
+    return gateway.app.test_client(use_cookies=False)
+
+
+def forwarded(host="grafana.jarllindquist.com", uri="/d/abc?x=1", method="GET", cookie=None):
+    headers = {"X-Forwarded-Proto": "https", "X-Forwarded-Host": host, "X-Forwarded-Uri": uri,
+               "X-Forwarded-Method": method}
+    if cookie:
+        headers["Cookie"] = f"ops_session={cookie}"
+    return headers
+
+
+# --- /auth/verify: what Traefik asks before every request ---
+
+def test_no_cookie_goes_to_login_with_the_way_back(client, n8n):
+    r = client.get("/auth/verify", headers=forwarded())
+    assert r.status_code == 302
+    loc = urlsplit(r.headers["Location"])
+    assert f"{loc.scheme}://{loc.netloc}{loc.path}" == ORIGIN + "/auth/login"
+    assert unquote(parse_qs(loc.query)["rd"][0]) == "https://grafana.jarllindquist.com/d/abc?x=1"
+    assert "X-WEBAUTH-USER" not in r.headers
+
+
+def test_valid_session_passes_and_names_the_user(client, n8n):
+    r = client.get("/auth/verify", headers=forwarded(cookie="good-session"))
+    assert r.status_code == 200
+    assert r.headers["X-WEBAUTH-USER"] == "admin"
+    assert n8n.calls == [("session-check", {"app": "ops"}, {"X-Admin-Session": "good-session"})]
+
+
+def test_a_yes_is_cached_so_n8n_is_not_asked_on_every_request(client, n8n):
+    for _ in range(5):
+        assert client.get("/auth/verify", headers=forwarded(cookie="good-session")).status_code == 200
+    assert len(n8n.calls) == 1
+
+
+def test_unknown_session_does_not_pass(client, n8n):
+    r = client.get("/auth/verify", headers=forwarded(cookie="made-up"))
+    assert r.status_code == 302
+    assert "X-WEBAUTH-USER" not in r.headers
+
+
+def test_other_methods_get_401_not_a_redirect(client, n8n):
+    assert client.get("/auth/verify", headers=forwarded(method="POST")).status_code == 401
+
+
+def test_n8n_down_lets_nobody_in(client, monkeypatch):
+    def down(*args, **kwargs):
+        raise requests.ConnectionError("n8n is down")
+
+    monkeypatch.setattr(gateway.requests, "post", down)
+    gateway._checks.clear()
+    assert client.get("/auth/verify", headers=forwarded(cookie="good-session")).status_code == 302
+
+
+def test_a_foreign_host_is_not_used_as_the_way_back(client, n8n):
+    r = client.get("/auth/verify", headers=forwarded(host="evil.example"))
+    assert r.status_code == 302
+    assert r.headers["Location"] == ORIGIN + "/auth/login"
+
+
+@pytest.mark.parametrize("url, ok", [
+    ("https://grafana.jarllindquist.com/d/x", True),
+    ("https://jarllindquist.com/cv", True),
+    ("http://grafana.jarllindquist.com/", False),          # not https
+    ("https://jarllindquist.com.evil.example/", False),    # our name as a prefix of another domain
+    ("https://evil.example/?next=jarllindquist.com", False),
+    ("https://jarllindquist.com@evil.example/", False),    # user info trick
+    ("https://notjarllindquist.com/", False),
+    ("https://grafana.jarllindquist.com:8443/", False),
+    ("//evil.example/", False),
+    ("javascript:alert(1)", False),
+    ("", False),
+    (None, False),
+])
+def test_safe_return(url, ok):
+    result = gateway.safe_return(url)
+    assert (result is not None and result == url) is ok
+
+
+# --- login: request, poll, cookie ---
+
+def test_login_request_needs_our_origin(client, n8n):
+    assert client.post("/auth/login").status_code == 403
+    assert client.post("/auth/login", headers={"Origin": "https://evil.example"}).status_code == 403
+    assert n8n.calls == []  # nothing reached Telegram
+
+
+def test_login_request_asks_n8n_for_app_ops_and_keeps_the_pending_id(client, n8n):
+    r = client.post("/auth/login", headers={"Origin": ORIGIN})
+    assert r.status_code == 200
+    assert n8n.calls == [("request-magic-link", {"app": "ops"}, {})]
+    cookie = r.headers["Set-Cookie"]
+    assert cookie.startswith("ops_pending=pending-123")
+    for part in ("HttpOnly", "Secure", "SameSite=Strict", "Path=/auth"):
+        assert part in cookie
+
+
+def test_login_request_passes_on_too_many(client, n8n):
+    n8n.magic_link_status = 429
+    assert client.post("/auth/login", headers={"Origin": ORIGIN}).status_code == 429
+
+
+def test_status_without_a_request_is_400(client, n8n):
+    assert client.get("/auth/login/status").status_code == 400
+
+
+def test_status_before_approval_sets_no_session(client, n8n):
+    r = client.get("/auth/login/status", headers={"Cookie": "ops_pending=pending-123"})
+    assert r.get_json() == {"authenticated": False}
+    assert "ops_session" not in r.headers.get("Set-Cookie", "")
+
+
+def test_approval_sets_the_domain_cookie_and_returns_the_safe_way_back(client, n8n):
+    n8n.approved.add("pending-123")
+    rd = "https://grafana.jarllindquist.com/d/abc"
+    r = client.get("/auth/login/status", query_string={"rd": rd}, headers={"Cookie": "ops_pending=pending-123"})
+    assert r.get_json() == {"authenticated": True, "next": rd}
+    cookies = r.headers.getlist("Set-Cookie")
+    session = next(c for c in cookies if c.startswith("ops_session="))
+    assert session.startswith("ops_session=pending-123")
+    for part in ("Domain=jarllindquist.com", "HttpOnly", "Secure", "SameSite=Lax", "Path=/"):
+        assert part in session
+    assert any(c.startswith("ops_pending=;") for c in cookies)  # the pending id is cleared
+
+
+def test_approval_never_sends_you_to_a_foreign_site(client, n8n):
+    n8n.approved.add("pending-123")
+    r = client.get("/auth/login/status", query_string={"rd": "https://evil.example/"},
+                   headers={"Cookie": "ops_pending=pending-123"})
+    assert r.get_json()["next"] == "/auth/login"
+
+
+def test_login_page_sends_a_logged_in_user_straight_back(client, n8n):
+    rd = "https://grafana.jarllindquist.com/"
+    r = client.get("/auth/login", query_string={"rd": rd}, headers={"Cookie": "ops_session=good-session"})
+    assert r.status_code == 302 and r.headers["Location"] == rd
+
+
+def test_login_page_shows_the_button(client, n8n):
+    r = client.get("/auth/login")
+    assert r.status_code == 200
+    assert b"Skicka inloggning till Telegram" in r.data
+
+
+def test_logout_clears_the_cookie(client, n8n):
+    assert client.post("/auth/logout").status_code == 403
+    r = client.post("/auth/logout", headers={"Origin": ORIGIN, "Cookie": "ops_session=good-session"})
+    assert r.status_code == 303
+    cookie = r.headers["Set-Cookie"]
+    assert cookie.startswith("ops_session=;") and "Domain=jarllindquist.com" in cookie
+
+
+# --- headers ---
+
+def test_security_headers_on_every_answer(client, n8n):
+    for path in ("/auth/login", "/auth/health", "/auth/static/login.js"):
+        r = client.get(path)
+        assert "frame-ancestors 'none'" in r.headers["Content-Security-Policy"]
+        assert "unsafe-inline" not in r.headers["Content-Security-Policy"]
+        assert r.headers["Cache-Control"] == "no-store"
+        assert r.headers["X-Content-Type-Options"] == "nosniff"
