@@ -215,3 +215,23 @@ def test_security_headers_on_every_answer(client, n8n):
         assert "unsafe-inline" not in r.headers["Content-Security-Policy"]
         assert r.headers["Cache-Control"] == "no-store"
         assert r.headers["X-Content-Type-Options"] == "nosniff"
+
+
+# --- the tools on the page ---
+
+def test_logged_in_page_links_the_tools(client, n8n):
+    r = client.get("/auth/login", headers={"Cookie": "ops_session=good-session"})
+    assert b'href="/grafana/"' in r.data and b'href="/prometheus/"' in r.data
+
+
+def test_tools_are_not_shown_before_login(client, n8n):
+    assert b"/grafana/" not in client.get("/auth/login").data
+
+
+def test_tool_links_keep_only_our_own_addresses():
+    links = gateway.tool_links(
+        "Grafana=/grafana/; ChirpStack=https://chirpstack.jarllindquist.com/ ;Evil=https://evil.example/;"
+        "Scheme=//evil.example/;Js=javascript:alert(1);=/nameless/;Empty="
+    )
+    assert links == [{"name": "Grafana", "url": "/grafana/"},
+                     {"name": "ChirpStack", "url": "https://chirpstack.jarllindquist.com/"}]
