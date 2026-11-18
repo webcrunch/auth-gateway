@@ -18,7 +18,7 @@ services:
     environment:
       # The tools behind the login, as links on the page once logged in ("Name=/path/;...").
       # Add one here when a new service gets the ops-auth middleware.
-      - TOOLS=Grafana=/grafana/;Prometheus=/prometheus/
+      - TOOLS=Grafana=/grafana/;Prometheus=/prometheus/;PocketBase=https://pb.jarllindquist.com/_/
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.auth-gateway.rule=Host(`jarllindquist.com`) && PathPrefix(`/auth`)"
