@@ -11,7 +11,14 @@
   <main class="card">
     <h1>Serververktyg</h1>
     {% if logged_in %}
-      <p>Du är inloggad. Inloggningen gäller Grafana, ChirpStack och de andra verktygen på servern.</p>
+      <p>Du är inloggad. Inloggningen gäller alla verktyg på servern.</p>
+      {% if tools %}
+        <ul class="tools">
+          {% for tool in tools %}
+            <li><a href="{{ tool.url }}">{{ tool.name }}</a></li>
+          {% endfor %}
+        </ul>
+      {% endif %}
       <form method="post" action="/auth/logout">
         <button type="submit" class="secondary">Logga ut</button>
       </form>

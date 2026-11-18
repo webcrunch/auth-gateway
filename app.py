@@ -26,6 +26,21 @@ COOKIE_DOMAIN = os.environ.get("COOKIE_DOMAIN", "jarllindquist.com")
 PUBLIC_ORIGIN = os.environ.get("PUBLIC_ORIGIN", "https://jarllindquist.com")
 # The user name the protected services see (Grafana: the existing admin account)
 OPS_USER = os.environ.get("OPS_USER", "admin")
+# The tools behind the login, linked from the page once logged in: "Name=/path/;Name=/path/"
+TOOLS = os.environ.get("TOOLS", "Grafana=/grafana/;Prometheus=/prometheus/")
+
+
+def tool_links(spec: str) -> list[dict]:
+    """Name and address per tool; only paths on this site or https on our own domain."""
+    links = []
+    for part in spec.split(";"):
+        name, _, url = part.partition("=")
+        name, url = name.strip(), url.strip()
+        if not name or not url:
+            continue
+        if (url.startswith("/") and not url.startswith("//")) or safe_return(url):
+            links.append({"name": name, "url": url})
+    return links
 
 SESSION_COOKIE = "ops_session"
 PENDING_COOKIE = "ops_pending"
@@ -132,7 +147,8 @@ def login_page():
     logged_in = session_valid(request.cookies.get(SESSION_COOKIE))
     if logged_in and target:
         return redirect(target, 302)
-    return render_template("login.html", logged_in=logged_in, rd=target or "")
+    return render_template("login.html", logged_in=logged_in, rd=target or "",
+                           tools=tool_links(TOOLS) if logged_in else [])
 
 
 @app.post("/auth/login")
