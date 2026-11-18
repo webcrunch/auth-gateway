@@ -15,6 +15,10 @@ services:
       - /tmp
     security_opt:
       - no-new-privileges:true
+    environment:
+      # The tools behind the login, as links on the page once logged in ("Name=/path/;...").
+      # Add one here when a new service gets the ops-auth middleware.
+      - TOOLS=Grafana=/grafana/;Prometheus=/prometheus/
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.auth-gateway.rule=Host(`jarllindquist.com`) && PathPrefix(`/auth`)"

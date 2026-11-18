@@ -42,7 +42,7 @@ the gateway's answer, but a request that goes around Traefik could set it itself
 
 Settings (environment): `N8N_WEBHOOK_URL`, `MAGIC_LINK_APP` (`ops`), `COOKIE_DOMAIN`
 (`jarllindquist.com`), `PUBLIC_ORIGIN` (`https://jarllindquist.com`), `OPS_USER` (`admin`, the
-name the services see).
+name the services see), `TOOLS` (the links shown once logged in, set in `docker-compose.prod.yml`).
 
 ## Develop
 

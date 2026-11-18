@@ -219,12 +219,14 @@ def test_security_headers_on_every_answer(client, n8n):
 
 # --- the tools on the page ---
 
-def test_logged_in_page_links_the_tools(client, n8n):
+def test_logged_in_page_links_the_tools(client, n8n, monkeypatch):
+    monkeypatch.setattr(gateway, "TOOLS", "Grafana=/grafana/;Prometheus=/prometheus/")
     r = client.get("/auth/login", headers={"Cookie": "ops_session=good-session"})
     assert b'href="/grafana/"' in r.data and b'href="/prometheus/"' in r.data
 
 
-def test_tools_are_not_shown_before_login(client, n8n):
+def test_tools_are_not_shown_before_login(client, n8n, monkeypatch):
+    monkeypatch.setattr(gateway, "TOOLS", "Grafana=/grafana/")
     assert b"/grafana/" not in client.get("/auth/login").data
 
 
@@ -235,3 +237,9 @@ def test_tool_links_keep_only_our_own_addresses():
     )
     assert links == [{"name": "Grafana", "url": "/grafana/"},
                      {"name": "ChirpStack", "url": "https://chirpstack.jarllindquist.com/"}]
+
+
+def test_no_tools_configured_shows_no_list(client, n8n, monkeypatch):
+    monkeypatch.setattr(gateway, "TOOLS", "")
+    r = client.get("/auth/login", headers={"Cookie": "ops_session=good-session"})
+    assert b'class="tools"' not in r.data and b"Logga ut" in r.data

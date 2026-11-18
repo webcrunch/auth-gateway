@@ -26,8 +26,9 @@ COOKIE_DOMAIN = os.environ.get("COOKIE_DOMAIN", "jarllindquist.com")
 PUBLIC_ORIGIN = os.environ.get("PUBLIC_ORIGIN", "https://jarllindquist.com")
 # The user name the protected services see (Grafana: the existing admin account)
 OPS_USER = os.environ.get("OPS_USER", "admin")
-# The tools behind the login, linked from the page once logged in: "Name=/path/;Name=/path/"
-TOOLS = os.environ.get("TOOLS", "Grafana=/grafana/;Prometheus=/prometheus/")
+# The tools behind the login, linked from the page once logged in: "Name=/path/;Name=/path/".
+# Set in docker-compose.prod.yml, next to the rest of the setup; none when unset.
+TOOLS = os.environ.get("TOOLS", "")
 
 
 def tool_links(spec: str) -> list[dict]:
