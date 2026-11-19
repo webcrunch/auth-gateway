@@ -19,6 +19,9 @@ services:
       # The tools behind the login, as links on the page once logged in ("Name=/path/;...").
       # Add one here when a new service gets the ops-auth middleware.
       - TOOLS=Grafana=/grafana/;Prometheus=/prometheus/;PocketBase=https://pb.jarllindquist.com/_/;HeimState=/heim/
+      # Machine access without Telegram (see app.py): name|sha256 of the token|expires|host|prefix.
+      # Only the hash is here. claude-heim: reads the HeimState API while the dashboard is built.
+      - SERVICE_TOKENS=claude-heim|3c86959a927ce94ed4543ca1f00b91c4ab2ca650c7cb30a329fc177a3afeed41|2026-11-26T08:00:00Z|jarllindquist.com|/heim/api/
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.auth-gateway.rule=Host(`jarllindquist.com`) && PathPrefix(`/auth`)"
