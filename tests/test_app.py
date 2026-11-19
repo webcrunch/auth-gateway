@@ -293,3 +293,70 @@ def test_logout_works_when_n8n_is_down(client, monkeypatch):
     monkeypatch.setattr(gateway.requests, "post", down)
     r = client.post("/auth/logout", headers={"Origin": ORIGIN, "Cookie": "ops_session=good-session"})
     assert r.status_code == 303 and r.headers["Set-Cookie"].startswith("ops_session=;")
+
+
+# --- service tokens: machine access, GET only, one host and prefix, until a date ---
+
+import hashlib as _hashlib
+from datetime import datetime as _dt, timezone as _tz
+
+TOKEN = "a-long-random-test-token-0123456789abcdef"
+SPEC = ("claude-heim|" + _hashlib.sha256(TOKEN.encode()).hexdigest()
+        + "|2099-01-01T00:00:00Z|jarllindquist.com|/heim/api/")
+
+
+@pytest.fixture
+def tokens(monkeypatch):
+    monkeypatch.setattr(gateway, "SERVICE_TOKENS", gateway.parse_service_tokens(SPEC))
+
+
+def bearer(uri="/heim/api/summary", host="jarllindquist.com", method="GET", token=TOKEN):
+    return {"Authorization": "Bearer " + token, "X-Forwarded-Host": host, "X-Forwarded-Uri": uri,
+            "X-Forwarded-Method": method, "X-Forwarded-Proto": "https"}
+
+
+def test_service_token_reads_its_prefix(client, n8n, tokens):
+    r = client.get("/auth/verify", headers=bearer())
+    assert r.status_code == 200 and r.headers["X-WEBAUTH-USER"] == "service:claude-heim"
+    assert n8n.calls == []  # no session check, no Telegram
+
+
+@pytest.mark.parametrize("headers", [
+    bearer(uri="/grafana/"),                       # outside the prefix
+    bearer(uri="/heim/"),                          # the page itself, not the API
+    bearer(uri="/heim/api/../../grafana/"),        # dot segments
+    bearer(uri="/heim/api/%2e%2e/x"),              # encoded dots
+    bearer(uri="/heim/api//x"),                    # double slash
+    bearer(method="POST"),                         # not a read
+    bearer(host="pb.jarllindquist.com"),           # another host
+    bearer(token="wrong-token"),                   # unknown token
+])
+def test_service_token_refused(client, n8n, tokens, headers):
+    r = client.get("/auth/verify", headers=headers)
+    assert r.status_code == 401
+    assert "X-WEBAUTH-USER" not in r.headers
+
+
+def test_expired_service_token_is_refused(tokens):
+    later = _dt(2099, 1, 2, tzinfo=_tz.utc)
+    assert gateway.service_token_user("Bearer " + TOKEN, "jarllindquist.com", "/heim/api/x", "GET", now=later) is None
+    earlier = _dt(2098, 12, 31, tzinfo=_tz.utc)
+    assert gateway.service_token_user("Bearer " + TOKEN, "jarllindquist.com", "/heim/api/x", "GET", now=earlier) == "claude-heim"
+
+
+def test_no_service_tokens_configured_means_no_machine_access(client, n8n, monkeypatch):
+    monkeypatch.setattr(gateway, "SERVICE_TOKENS", [])
+    assert client.get("/auth/verify", headers=bearer()).status_code == 401
+
+
+def test_malformed_token_lines_are_ignored():
+    bad = ["only|three|parts", "x|nothex|2099-01-01T00:00:00Z|h|/p/", "x|" + "a" * 64 + "|not-a-date|h|/p/",
+           "x|" + "a" * 64 + "|2099-01-01T00:00:00|h|/p/",  # no timezone
+           "x|" + "a" * 64 + "|2099-01-01T00:00:00Z|h|no-slash"]
+    parsed = gateway.parse_service_tokens(";".join(bad + [SPEC]))
+    assert [t["name"] for t in parsed] == ["claude-heim"]
+
+
+def test_a_cookie_login_still_works_next_to_tokens(client, n8n, tokens):
+    r = client.get("/auth/verify", headers=forwarded(cookie="good-session"))
+    assert r.status_code == 200 and r.headers["X-WEBAUTH-USER"] == "admin"

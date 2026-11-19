@@ -42,6 +42,9 @@ the gateway's answer, but a request that goes around Traefik could set it itself
 - Each login request gets a 4-character code, shown on the page and, with the requester's IP, in the
   Telegram message. Approve only when the codes match: a request someone else started has another code.
 - Logout ends the session in n8n (`session-end`), so a copied cookie stops working at once.
+- **Service tokens** (`SERVICE_TOKENS`): machine access without Telegram, one host and path prefix,
+  GET/HEAD only, until a date. Only the SHA-256 of each token is stored. Dot segments, encoded dots and
+  double slashes are refused. Each use is logged with the token's name.
 
 Settings (environment): `N8N_WEBHOOK_URL`, `MAGIC_LINK_APP` (`ops`), `COOKIE_DOMAIN`
 (`jarllindquist.com`), `PUBLIC_ORIGIN` (`https://jarllindquist.com`), `OPS_USER` (`admin`, the

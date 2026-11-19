@@ -10,10 +10,13 @@ The session cookie holds the n8n session id and nothing else; n8n decides whethe
 covers every subdomain.
 """
 
+import hashlib
+import hmac
 import os
 import secrets
 import threading
 import time
+from datetime import datetime, timezone
 from urllib.parse import quote, urlsplit
 
 import requests
@@ -43,6 +46,56 @@ def tool_links(spec: str) -> list[dict]:
         if (url.startswith("/") and not url.startswith("//")) or safe_return(url):
             links.append({"name": name, "url": url})
     return links
+
+# Machine access without Telegram, for one host + path prefix, GET only, until a date:
+#   SERVICE_TOKENS="name|sha256-of-token|expires (ISO, UTC)|host|/path/prefix/;..."
+# Only the SHA-256 of a long random token is stored, so the list can sit in the public compose file.
+SERVICE_TOKENS_SPEC = os.environ.get("SERVICE_TOKENS", "")
+
+
+def parse_service_tokens(spec: str) -> list[dict]:
+    tokens = []
+    for part in spec.split(";"):
+        fields = [f.strip() for f in part.split("|")]
+        if len(fields) != 5:
+            continue
+        name, digest, expires, host, prefix = fields
+        try:
+            when = datetime.fromisoformat(expires.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if (not name or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)
+                or when.tzinfo is None or not host or not prefix.startswith("/") or not prefix.endswith("/")):
+            continue
+        tokens.append({"name": name, "hash": digest, "expires": when, "host": host.lower(), "prefix": prefix})
+    return tokens
+
+
+SERVICE_TOKENS = parse_service_tokens(SERVICE_TOKENS_SPEC)
+
+
+def service_token_user(authorization: str, host: str, uri: str, method: str, now: datetime | None = None) -> str | None:
+    """The token's name when it is valid for this request, else None."""
+    if not authorization.startswith("Bearer "):
+        return None
+    token = authorization[7:].strip()
+    if not token or len(token) > 200:
+        return None
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    path = uri.split("?", 1)[0]
+    # No way around the prefix: dot segments, encoded dots/slashes or double slashes are refused outright
+    lowered = path.lower()
+    if "/../" in path + "/" or "/./" in path + "/" or "%2e" in lowered or "%2f" in lowered or "//" in path:
+        return None
+    now = now or datetime.now(timezone.utc)
+    for entry in SERVICE_TOKENS:
+        if hmac.compare_digest(digest, entry["hash"]):
+            ok = (now < entry["expires"] and method in ("GET", "HEAD")
+                  and host.lower() == entry["host"] and path.startswith(entry["prefix"]))
+            print(f"service token {entry['name']}: {'allowed' if ok else 'refused'} {method} {host}{path}", flush=True)
+            return entry["name"] if ok else None
+    return None
+
 
 SESSION_COOKIE = "ops_session"
 PENDING_COOKIE = "ops_pending"
@@ -140,6 +193,17 @@ def health():
 
 @app.get("/auth/verify")
 def verify():
+    # A machine with a service token: let through or refuse, never a redirect to the login page
+    authorization = request.headers.get("Authorization", "")
+    if authorization.startswith("Bearer "):
+        name = service_token_user(authorization, request.headers.get("X-Forwarded-Host", ""),
+                                  request.headers.get("X-Forwarded-Uri", "/"),
+                                  request.headers.get("X-Forwarded-Method", "GET"))
+        if not name:
+            return "", 401
+        response = make_response("", 200)
+        response.headers["X-WEBAUTH-USER"] = f"service:{name}"
+        return response
     if session_valid(request.cookies.get(SESSION_COOKIE)):
         response = make_response("", 200)
         response.headers["X-WEBAUTH-USER"] = OPS_USER
