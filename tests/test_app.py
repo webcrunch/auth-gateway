@@ -352,7 +352,8 @@ def test_no_service_tokens_configured_means_no_machine_access(client, n8n, monke
 def test_malformed_token_lines_are_ignored():
     bad = ["only|three|parts", "x|nothex|2099-01-01T00:00:00Z|h|/p/", "x|" + "a" * 64 + "|not-a-date|h|/p/",
            "x|" + "a" * 64 + "|2099-01-01T00:00:00|h|/p/",  # no timezone
-           "x|" + "a" * 64 + "|2099-01-01T00:00:00Z|h|no-slash"]
+           "x|" + "a" * 64 + "|2099-01-01T00:00:00Z|h|no-slash",
+           "x|" + "a" * 64 + "|2099-01-01T00:00:00Z|h|/p/|maybe"]  # unknown flag
     parsed = gateway.parse_service_tokens(";".join(bad + [SPEC]))
     assert [t["name"] for t in parsed] == ["claude-heim"]
 
@@ -360,3 +361,51 @@ def test_malformed_token_lines_are_ignored():
 def test_a_cookie_login_still_works_next_to_tokens(client, n8n, tokens):
     r = client.get("/auth/verify", headers=forwarded(cookie="good-session"))
     assert r.status_code == 200 and r.headers["X-WEBAUTH-USER"] == "admin"
+
+
+# --- ?key= in the URL, for the phone widget ---
+
+WIDGET = "another-long-random-widget-token-98765"
+WIDGET_SPEC = ("phone-widget|" + _hashlib.sha256(WIDGET.encode()).hexdigest()
+               + "|2099-01-01T00:00:00Z|jarllindquist.com|/heim/api/widget|query")
+
+
+@pytest.fixture
+def widget_tokens(monkeypatch):
+    monkeypatch.setattr(gateway, "SERVICE_TOKENS", gateway.parse_service_tokens(SPEC + ";" + WIDGET_SPEC))
+
+
+def by_url(uri, method="GET", host="jarllindquist.com"):
+    return {"X-Forwarded-Host": host, "X-Forwarded-Uri": uri, "X-Forwarded-Method": method, "X-Forwarded-Proto": "https"}
+
+
+def test_widget_key_in_the_url_reads_exactly_its_path(client, n8n, widget_tokens):
+    r = client.get("/auth/verify", headers=by_url("/heim/api/widget?key=" + WIDGET))
+    assert r.status_code == 200 and r.headers["X-WEBAUTH-USER"] == "service:phone-widget"
+
+
+@pytest.mark.parametrize("uri", [
+    "/heim/api/latest?key=" + WIDGET,          # another endpoint (has occupancy)
+    "/heim/api/widgetx?key=" + WIDGET,         # exact path, not a prefix
+    "/heim/api/widget/?key=" + WIDGET,
+    "/heim/api/hourly?key=" + WIDGET,
+    "/heim/api/widget?key=" + WIDGET + "&key=" + WIDGET,  # two keys
+])
+def test_widget_key_refused_elsewhere(client, n8n, widget_tokens, uri):
+    assert client.get("/auth/verify", headers=by_url(uri)).status_code != 200
+
+
+def test_a_header_only_token_is_refused_in_the_url(client, n8n, widget_tokens):
+    # claude-heim may read /heim/api/ with a header, but not with ?key= (it isn't marked "query")
+    r = client.get("/auth/verify", headers=by_url("/heim/api/latest?key=" + TOKEN))
+    assert r.status_code == 401
+
+
+def test_the_widget_key_also_works_as_a_header(client, n8n, widget_tokens):
+    r = client.get("/auth/verify", headers=bearer(uri="/heim/api/widget", token=WIDGET))
+    assert r.status_code == 200
+
+
+def test_the_key_never_reaches_the_log(client, n8n, widget_tokens, capsys):
+    client.get("/auth/verify", headers=by_url("/heim/api/widget?key=" + WIDGET))
+    assert WIDGET not in capsys.readouterr().out
