@@ -21,7 +21,8 @@ services:
       - TOOLS=Grafana=/grafana/;Prometheus=/prometheus/;PocketBase=https://pb.jarllindquist.com/_/;HeimState=/heim/
       # Machine access without Telegram (see app.py): name|sha256 of the token|expires|host|prefix.
       # Only the hash is here. claude-heim: reads the HeimState API while the dashboard is built.
-      - SERVICE_TOKENS=claude-heim|3c86959a927ce94ed4543ca1f00b91c4ab2ca650c7cb30a329fc177a3afeed41|2026-11-26T08:00:00Z|jarllindquist.com|/heim/api/
+      # phone-widget: the Android widget, ?key= in the URL, exactly /heim/api/widget (no occupancy).
+      - SERVICE_TOKENS=claude-heim|3c86959a927ce94ed4543ca1f00b91c4ab2ca650c7cb30a329fc177a3afeed41|2026-11-26T08:00:00Z|jarllindquist.com|/heim/api/;phone-widget|bdc111cf9a24694e51cabc3aca970896cecb3b246553e52112577edb6a4456a2|2027-11-19T00:00:00Z|jarllindquist.com|/heim/api/widget|query
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.auth-gateway.rule=Host(`jarllindquist.com`) && PathPrefix(`/auth`)"

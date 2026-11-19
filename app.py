@@ -17,7 +17,7 @@ import secrets
 import threading
 import time
 from datetime import datetime, timezone
-from urllib.parse import quote, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 import requests
 from flask import Flask, jsonify, make_response, redirect, render_template, request
@@ -48,7 +48,10 @@ def tool_links(spec: str) -> list[dict]:
     return links
 
 # Machine access without Telegram, for one host + path prefix, GET only, until a date:
-#   SERVICE_TOKENS="name|sha256-of-token|expires (ISO, UTC)|host|/path/prefix/;..."
+#   SERVICE_TOKENS="name|sha256-of-token|expires (ISO, UTC)|host|/path/prefix/[|query];..."
+# A prefix ending in "/" covers everything under it; without the slash it is that exact path.
+# "query" lets the token also come as ?key=... in the URL, for clients that can't send headers
+# (a phone widget); such a token should be limited to one exact path.
 # Only the SHA-256 of a long random token is stored, so the list can sit in the public compose file.
 SERVICE_TOKENS_SPEC = os.environ.get("SERVICE_TOKENS", "")
 
@@ -57,25 +60,34 @@ def parse_service_tokens(spec: str) -> list[dict]:
     tokens = []
     for part in spec.split(";"):
         fields = [f.strip() for f in part.split("|")]
-        if len(fields) != 5:
+        if len(fields) == 5:
+            fields.append("")
+        if len(fields) != 6 or fields[5] not in ("", "query"):
             continue
-        name, digest, expires, host, prefix = fields
+        name, digest, expires, host, prefix, flag = fields
         try:
             when = datetime.fromisoformat(expires.replace("Z", "+00:00"))
         except ValueError:
             continue
         if (not name or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)
-                or when.tzinfo is None or not host or not prefix.startswith("/") or not prefix.endswith("/")):
+                or when.tzinfo is None or not host or not prefix.startswith("/")):
             continue
-        tokens.append({"name": name, "hash": digest, "expires": when, "host": host.lower(), "prefix": prefix})
+        tokens.append({"name": name, "hash": digest, "expires": when, "host": host.lower(), "prefix": prefix,
+                       "query": flag == "query"})
     return tokens
 
 
 SERVICE_TOKENS = parse_service_tokens(SERVICE_TOKENS_SPEC)
 
 
-def service_token_user(authorization: str, host: str, uri: str, method: str, now: datetime | None = None) -> str | None:
-    """The token's name when it is valid for this request, else None."""
+def path_allowed(path: str, prefix: str) -> bool:
+    return path.startswith(prefix) if prefix.endswith("/") else path == prefix
+
+
+def service_token_user(authorization: str, host: str, uri: str, method: str, now: datetime | None = None,
+                       from_query: bool = False) -> str | None:
+    """The token's name when it is valid for this request, else None. from_query: the token came as
+    ?key= in the URL, which only tokens marked "query" accept."""
     if not authorization.startswith("Bearer "):
         return None
     token = authorization[7:].strip()
@@ -90,8 +102,8 @@ def service_token_user(authorization: str, host: str, uri: str, method: str, now
     now = now or datetime.now(timezone.utc)
     for entry in SERVICE_TOKENS:
         if hmac.compare_digest(digest, entry["hash"]):
-            ok = (now < entry["expires"] and method in ("GET", "HEAD")
-                  and host.lower() == entry["host"] and path.startswith(entry["prefix"]))
+            ok = (now < entry["expires"] and method in ("GET", "HEAD") and (entry["query"] or not from_query)
+                  and host.lower() == entry["host"] and path_allowed(path, entry["prefix"]))
             print(f"service token {entry['name']}: {'allowed' if ok else 'refused'} {method} {host}{path}", flush=True)
             return entry["name"] if ok else None
     return None
@@ -195,10 +207,15 @@ def health():
 def verify():
     # A machine with a service token: let through or refuse, never a redirect to the login page
     authorization = request.headers.get("Authorization", "")
+    uri = request.headers.get("X-Forwarded-Uri", "/")
+    from_query = False
+    if not authorization.startswith("Bearer ") and "?" in uri:
+        keys = parse_qs(uri.split("?", 1)[1]).get("key", [])
+        if len(keys) == 1:
+            authorization, from_query = "Bearer " + keys[0], True
     if authorization.startswith("Bearer "):
-        name = service_token_user(authorization, request.headers.get("X-Forwarded-Host", ""),
-                                  request.headers.get("X-Forwarded-Uri", "/"),
-                                  request.headers.get("X-Forwarded-Method", "GET"))
+        name = service_token_user(authorization, request.headers.get("X-Forwarded-Host", ""), uri,
+                                  request.headers.get("X-Forwarded-Method", "GET"), from_query=from_query)
         if not name:
             return "", 401
         response = make_response("", 200)
