@@ -409,3 +409,28 @@ def test_the_widget_key_also_works_as_a_header(client, n8n, widget_tokens):
 def test_the_key_never_reaches_the_log(client, n8n, widget_tokens, capsys):
     client.get("/auth/verify", headers=by_url("/heim/api/widget?key=" + WIDGET))
     assert WIDGET not in capsys.readouterr().out
+
+
+# --- an app with a login page of its own (LOGIN_PAGES) ---
+
+def test_login_pages_parse_only_plain_paths():
+    assert gateway.parse_login_pages("/heim=/heim/login; /x/=/x/in") == [("/heim", "/heim/login"), ("/x", "/x/in")]
+    assert gateway.parse_login_pages("/a=https://evil.example/;/b=//evil.example;/c=/c?x=1;=/d;/e=") == []
+
+
+def test_an_app_page_goes_to_the_apps_own_login(client, n8n, monkeypatch):
+    monkeypatch.setattr(gateway, "LOGIN_PAGES", "/heim=/heim/login")
+    r = client.get("/auth/verify", headers=forwarded(host="jarllindquist.com", uri="/heim/enheter?enhet=a1"))
+    loc = urlsplit(r.headers["Location"])
+    assert r.status_code == 302
+    assert f"{loc.scheme}://{loc.netloc}{loc.path}" == ORIGIN + "/heim/login"
+    assert unquote(parse_qs(loc.query)["rd"][0]) == "https://jarllindquist.com/heim/enheter?enhet=a1"
+    r = client.get("/auth/verify", headers=forwarded(host="jarllindquist.com", uri="/heim"))
+    assert urlsplit(r.headers["Location"]).path == "/heim/login"
+
+
+def test_other_pages_still_use_the_shared_login(client, n8n, monkeypatch):
+    monkeypatch.setattr(gateway, "LOGIN_PAGES", "/heim=/heim/login")
+    for host, uri in [("jarllindquist.com", "/grafana/"), ("jarllindquist.com", "/heimdal/x"), ("pb.jarllindquist.com", "/heim/x")]:
+        r = client.get("/auth/verify", headers=forwarded(host=host, uri=uri))
+        assert urlsplit(r.headers["Location"]).path == "/auth/login", (host, uri)

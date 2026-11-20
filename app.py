@@ -33,6 +33,10 @@ OPS_USER = os.environ.get("OPS_USER", "admin")
 # The tools behind the login, linked from the page once logged in: "Name=/path/;Name=/path/".
 # Set in docker-compose.prod.yml, next to the rest of the setup; none when unset.
 TOOLS = os.environ.get("TOOLS", "")
+# An app behind the login with a login page of its own: "/prefix=/page;...". Someone who isn't logged
+# in and opens a page under the prefix (on PUBLIC_ORIGIN) is sent to that app's page instead of
+# /auth/login. The app's page uses /auth/login and /auth/login/status like ours does.
+LOGIN_PAGES = os.environ.get("LOGIN_PAGES", "")
 
 
 def tool_links(spec: str) -> list[dict]:
@@ -54,6 +58,28 @@ def tool_links(spec: str) -> list[dict]:
 # (a phone widget); such a token should be limited to one exact path.
 # Only the SHA-256 of a long random token is stored, so the list can sit in the public compose file.
 SERVICE_TOKENS_SPEC = os.environ.get("SERVICE_TOKENS", "")
+
+
+def parse_login_pages(spec: str) -> list[tuple[str, str]]:
+    """(prefix, page) pairs; both plain paths on this site, nothing else."""
+    pages = []
+    for part in spec.split(";"):
+        prefix, _, page = part.strip().partition("=")
+        prefix, page = prefix.strip().rstrip("/"), page.strip()
+        ok = lambda p: p.startswith("/") and "//" not in p and "\\" not in p and all(c.isalnum() or c in "/-_." for c in p)
+        if prefix and page and ok(prefix) and ok(page):
+            pages.append((prefix, page))
+    return pages
+
+
+def login_page_for(host: str, uri: str) -> str:
+    """Where to log in for this page: the app's own login page, or /auth/login."""
+    if host.lower() == (urlsplit(PUBLIC_ORIGIN).hostname or ""):
+        path = urlsplit(uri).path
+        for prefix, page in parse_login_pages(LOGIN_PAGES):
+            if path == prefix or path.startswith(prefix + "/"):
+                return PUBLIC_ORIGIN + page
+    return f"{PUBLIC_ORIGIN}/auth/login"
 
 
 def parse_service_tokens(spec: str) -> list[dict]:
@@ -232,7 +258,7 @@ def verify():
         f"{request.headers.get('X-Forwarded-Proto', 'https')}://"
         f"{request.headers.get('X-Forwarded-Host', '')}{request.headers.get('X-Forwarded-Uri', '/')}"
     )
-    login = f"{PUBLIC_ORIGIN}/auth/login"
+    login = login_page_for(request.headers.get("X-Forwarded-Host", ""), request.headers.get("X-Forwarded-Uri", "/"))
     if target:
         login += "?rd=" + quote(target, safe="")
     return redirect(login, 302)
