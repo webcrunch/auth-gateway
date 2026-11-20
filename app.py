@@ -16,6 +16,7 @@ import os
 import secrets
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, quote, urlsplit
 
@@ -40,16 +41,38 @@ LOGIN_PAGES = os.environ.get("LOGIN_PAGES", "")
 
 
 def tool_links(spec: str) -> list[dict]:
-    """Name and address per tool; only paths on this site or https on our own domain."""
+    """Name, address and a line about it per tool ("Name=/path/|what it is"); only paths on this site
+    or https on our own domain."""
     links = []
     for part in spec.split(";"):
-        name, _, url = part.partition("=")
-        name, url = name.strip(), url.strip()
+        name, _, rest = part.partition("=")
+        url, _, about = rest.partition("|")
+        name, url, about = name.strip(), url.strip(), about.strip()
         if not name or not url:
             continue
         if (url.startswith("/") and not url.startswith("//")) or safe_return(url):
-            links.append({"name": name, "url": url})
+            links.append({"name": name, "url": url, "about": about})
     return links
+
+
+def tool_status(url: str, session_id: str) -> str:
+    """Whether a tool answers: "up", "down", or "unknown" (sent to a login page). Asked with the
+    user's own session, only for the addresses in TOOLS (all on our own domain), never following
+    redirects."""
+    full = PUBLIC_ORIGIN + url if url.startswith("/") else url
+    try:
+        r = requests.get(full, cookies={SESSION_COOKIE: session_id}, allow_redirects=False, timeout=4)
+    except requests.RequestException:
+        return "down"
+    if r.status_code in (301, 302, 303, 307, 308):
+        where = urlsplit(r.headers.get("Location", "")).path
+        logins = ["/auth/login", "/tools"] + [page for _, page in parse_login_pages(LOGIN_PAGES)]
+        return "unknown" if where in logins else "up"
+    # 401/403: it answered, with a login of its own (Vault, n8n); 404 and 5xx: missing or broken
+    return "up" if r.status_code < 400 or r.status_code in (401, 403) else "down"
+
+
+_status_cache: dict[str, tuple[float, list[dict]]] = {}
 
 # Machine access without Telegram, for one host + path prefix, GET only, until a date:
 #   SERVICE_TOKENS="name|sha256-of-token|expires (ISO, UTC)|host|/path/prefix/[|query];..."
@@ -264,14 +287,35 @@ def verify():
     return redirect(login, 302)
 
 
+@app.get("/tools")
 @app.get("/auth/login")
 def login_page():
+    """The tools page: the login when you aren't logged in, the tools when you are. /auth/login is the
+    same page (old links and the services' redirects keep working)."""
     target = safe_return(request.args.get("rd"))
     logged_in = session_valid(request.cookies.get(SESSION_COOKIE))
     if logged_in and target:
         return redirect(target, 302)
     return render_template("login.html", logged_in=logged_in, rd=target or "",
                            tools=tool_links(TOOLS) if logged_in else [])
+
+
+@app.get("/tools/status")
+def tools_status():
+    """Up or down per tool, for the cards (logged in only; kept 30 seconds)."""
+    session_id = request.cookies.get(SESSION_COOKIE)
+    if not session_valid(session_id):
+        return jsonify({"error": "login"}), 401
+    now = time.monotonic()
+    cached = _status_cache.get("all")
+    if cached and now - cached[0] < 30:
+        return jsonify({"tools": cached[1]})
+    tools = tool_links(TOOLS)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        states = list(pool.map(lambda t: tool_status(t["url"], session_id), tools))
+    result = [{"name": t["name"], "status": s} for t, s in zip(tools, states)]
+    _status_cache["all"] = (now, result)
+    return jsonify({"tools": result})
 
 
 @app.post("/auth/login")
@@ -308,7 +352,7 @@ def login_status():
         authenticated = False
     if not authenticated:
         return jsonify({"authenticated": False})
-    result = jsonify({"authenticated": True, "next": safe_return(request.args.get("rd")) or "/auth/login"})
+    result = jsonify({"authenticated": True, "next": safe_return(request.args.get("rd")) or "/tools"})
     result.set_cookie(SESSION_COOKIE, session_id, max_age=SESSION_MAX_AGE, domain=COOKIE_DOMAIN, path="/",
                       secure=True, httponly=True, samesite="Lax")
     result.delete_cookie(PENDING_COOKIE, path="/auth", secure=True, httponly=True, samesite="Strict")
@@ -328,6 +372,6 @@ def logout():
             n8n("session-end", json={"app": MAGIC_LINK_APP}, headers={"X-Admin-Session": session_id})
         except requests.RequestException:
             pass  # the cookie is removed anyway; n8n ends the session after 15 idle minutes
-    result = redirect("/auth/login", 303)
+    result = redirect("/tools", 303)
     result.delete_cookie(SESSION_COOKIE, domain=COOKIE_DOMAIN, path="/", secure=True, httponly=True, samesite="Lax")
     return result

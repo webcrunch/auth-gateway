@@ -189,7 +189,7 @@ def test_approval_never_sends_you_to_a_foreign_site(client, n8n):
     n8n.approved.add("pending-123")
     r = client.get("/auth/login/status", query_string={"rd": "https://evil.example/"},
                    headers={"Cookie": "ops_pending=pending-123"})
-    assert r.get_json()["next"] == "/auth/login"
+    assert r.get_json()["next"] == "/tools"
 
 
 def test_login_page_sends_a_logged_in_user_straight_back(client, n8n):
@@ -241,8 +241,8 @@ def test_tool_links_keep_only_our_own_addresses():
         "Grafana=/grafana/; ChirpStack=https://chirpstack.jarllindquist.com/ ;Evil=https://evil.example/;"
         "Scheme=//evil.example/;Js=javascript:alert(1);=/nameless/;Empty="
     )
-    assert links == [{"name": "Grafana", "url": "/grafana/"},
-                     {"name": "ChirpStack", "url": "https://chirpstack.jarllindquist.com/"}]
+    assert links == [{"name": "Grafana", "url": "/grafana/", "about": ""},
+                     {"name": "ChirpStack", "url": "https://chirpstack.jarllindquist.com/", "about": ""}]
 
 
 def test_no_tools_configured_shows_no_list(client, n8n, monkeypatch):
@@ -434,3 +434,78 @@ def test_other_pages_still_use_the_shared_login(client, n8n, monkeypatch):
     for host, uri in [("jarllindquist.com", "/grafana/"), ("jarllindquist.com", "/heimdal/x"), ("pb.jarllindquist.com", "/heim/x")]:
         r = client.get("/auth/verify", headers=forwarded(host=host, uri=uri))
         assert urlsplit(r.headers["Location"]).path == "/auth/login", (host, uri)
+
+
+# --- /tools: the tools page, with the state of each tool ---
+
+class FakeGet:
+    """requests.get for the tool checks: an answer per URL, and what was sent."""
+    def __init__(self, answers):
+        self.answers, self.calls = answers, []
+
+    def __call__(self, url, cookies=None, allow_redirects=True, timeout=None):
+        self.calls.append((url, cookies, allow_redirects))
+        answer = self.answers[url]
+        if isinstance(answer, Exception):
+            raise answer
+        code, location = answer if isinstance(answer, tuple) else (answer, "")
+        response = FakeResponse(code, {})
+        response.headers = {"Location": location}
+        return response
+
+
+def test_tool_links_carry_a_line_about_each_tool():
+    assert gateway.tool_links("Grafana=/grafana/|Dashboards och loggar; Vault=https://vault.jarllindquist.com/ui/") == [
+        {"name": "Grafana", "url": "/grafana/", "about": "Dashboards och loggar"},
+        {"name": "Vault", "url": "https://vault.jarllindquist.com/ui/", "about": ""},
+    ]
+
+
+def test_tools_is_the_same_page_as_the_login(client, n8n, monkeypatch):
+    monkeypatch.setattr(gateway, "TOOLS", "Grafana=/grafana/|Dashboards")
+    assert b'id="send"' in client.get("/tools").data
+    r = client.get("/tools", headers={"Cookie": "ops_session=good-session"})
+    assert b'href="/grafana/"' in r.data and b"Dashboards" in r.data and b"/auth/static/tools.js" in r.data
+    assert "frame-ancestors 'none'" in r.headers["Content-Security-Policy"]
+
+
+def test_tool_states_need_a_session(client, n8n):
+    assert client.get("/tools/status").status_code == 401
+    assert client.get("/tools/status", headers={"Cookie": "ops_session=made-up"}).status_code == 401
+
+
+def test_tool_states_up_down_unknown(client, n8n, monkeypatch):
+    monkeypatch.setattr(gateway, "TOOLS", "A=/a/;B=/b/;C=/c/;D=https://vault.jarllindquist.com/ui/;E=/e/;F=/f/;G=/g/")
+    monkeypatch.setattr(gateway, "LOGIN_PAGES", "/heim=/heim/login")
+    gateway._status_cache.clear()
+    fake = FakeGet({
+        ORIGIN + "/a/": 200,
+        ORIGIN + "/b/": 502,
+        ORIGIN + "/c/": (302, ORIGIN + "/auth/login?rd=x"),
+        "https://vault.jarllindquist.com/ui/": (307, "/ui/vault/auth"),
+        ORIGIN + "/e/": requests.ConnectionError("no"),
+        ORIGIN + "/f/": 401,
+        ORIGIN + "/g/": (302, ORIGIN + "/heim/login?rd=y"),
+    })
+    monkeypatch.setattr(gateway.requests, "get", fake)
+    r = client.get("/tools/status", headers={"Cookie": "ops_session=good-session"})
+    assert {t["name"]: t["status"] for t in r.get_json()["tools"]} == {
+        "A": "up", "B": "down", "C": "unknown", "D": "up", "E": "down", "F": "up", "G": "unknown"}
+    # asked with the user's session, never following a redirect, only the addresses in TOOLS
+    assert all(c[1] == {"ops_session": "good-session"} and c[2] is False for c in fake.calls)
+    assert sorted(c[0] for c in fake.calls) == sorted(fake.answers)
+
+
+def test_tool_states_are_kept_30_seconds(client, n8n, monkeypatch):
+    monkeypatch.setattr(gateway, "TOOLS", "A=/a/")
+    gateway._status_cache.clear()
+    fake = FakeGet({ORIGIN + "/a/": 200})
+    monkeypatch.setattr(gateway.requests, "get", fake)
+    for _ in range(3):
+        client.get("/tools/status", headers={"Cookie": "ops_session=good-session"})
+    assert len(fake.calls) == 1
+
+
+def test_logout_goes_to_the_tools_page(client, n8n):
+    r = client.post("/auth/logout", headers={"Origin": ORIGIN, "Cookie": "ops_session=good-session"})
+    assert r.headers["Location"].endswith("/tools")
