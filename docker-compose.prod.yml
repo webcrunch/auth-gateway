@@ -16,9 +16,9 @@ services:
     security_opt:
       - no-new-privileges:true
     environment:
-      # The tools behind the login, as links on the page once logged in ("Name=/path/;...").
-      # Add one here when a new service gets the ops-auth middleware.
-      - TOOLS=Grafana=/grafana/;Prometheus=/prometheus/;PocketBase=https://pb.jarllindquist.com/_/;HeimState=/heim/
+      # The tools on jarllindquist.com/tools once logged in: "Name=/path/|what it is;...".
+      # Add one here when a new service gets the ops-auth middleware (or has a UI worth a card).
+      - TOOLS=HeimState=/heim/|Sensorerna hemma: läget nu, historik, larm och enheter;Grafana=/grafana/|Dashboards och loggar för servern;Prometheus=/prometheus/|Mätvärden och larmregler;n8n=/n8n/|Flöden: nyhetsbrev, larm, inloggningen;Vault=https://vault.jarllindquist.com/ui/|Hemligheterna för deployerna;PocketBase=https://pb.jarllindquist.com/_/|Databasen för LinkedIn-bilderna
       # Apps with a login page of their own ("/prefix=/page;..."): not logged in -> that page, not /auth/login
       - LOGIN_PAGES=/heim=/heim/login
       # Machine access without Telegram (see app.py): name|sha256 of the token|expires|host|prefix.
@@ -27,7 +27,8 @@ services:
       - SERVICE_TOKENS=claude-heim|3c86959a927ce94ed4543ca1f00b91c4ab2ca650c7cb30a329fc177a3afeed41|2026-11-26T08:00:00Z|jarllindquist.com|/heim/api/;phone-widget|bdc111cf9a24694e51cabc3aca970896cecb3b246553e52112577edb6a4456a2|2027-11-19T00:00:00Z|jarllindquist.com|/heim/api/widget|query
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.auth-gateway.rule=Host(`jarllindquist.com`) && PathPrefix(`/auth`)"
+      # /auth: the login API and the old address of the page; /tools: the tools page
+      - "traefik.http.routers.auth-gateway.rule=Host(`jarllindquist.com`) && (PathPrefix(`/auth`) || PathPrefix(`/tools`))"
       - "traefik.http.routers.auth-gateway.entrypoints=websecure"
       - "traefik.http.routers.auth-gateway.tls.certresolver=myresolver"
       - "traefik.http.services.auth-gateway.loadbalancer.server.port=8000"

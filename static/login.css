@@ -84,4 +84,26 @@ button.secondary {
 }
 
 .tools a:hover,
-.tools a:focus-visible { border-color: var(--accent); color: var(--accent); }
+.tools a:focus-visible { border-color: var(--accent); }
+.tools a:hover strong,
+.tools a:focus-visible strong { color: var(--accent); }
+
+/* --- the tools page (logged in) --- */
+.card.wide { max-width: 760px; }
+.card.wide .tools { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; }
+.tools a { display: flex; flex-direction: column; gap: 0.25rem; height: 100%; }
+.tool-head { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }
+.about { color: var(--muted); font-weight: 400; font-size: 0.9rem; }
+.state { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.8rem; font-weight: 500; color: var(--muted); white-space: nowrap; }
+.state i { width: 8px; height: 8px; border-radius: 50%; background: var(--border); }
+.state.up i { background: #15803d; }
+.state.down { color: #c2410c; }
+.state.down i { background: #c2410c; }
+@media (prefers-color-scheme: dark) {
+  .state.up i { background: #22c55e; }
+  .state.down { color: #fb923c; }
+  .state.down i { background: #fb923c; }
+}
+@media (max-width: 600px) {
+  .card.wide .tools { grid-template-columns: minmax(0, 1fr); }
+}
