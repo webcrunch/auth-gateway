@@ -18,7 +18,8 @@ services:
     environment:
       # The tools on jarllindquist.com/tools once logged in: "Name=/path/|what it is;...".
       # Add one here when a new service gets the ops-auth middleware (or has a UI worth a card).
-      - TOOLS=HeimState=/heim/|Sensorerna hemma: läget nu, historik, larm och enheter;Grafana=/grafana/|Dashboards och loggar för servern;Prometheus=/prometheus/|Mätvärden och larmregler;n8n=/n8n/|Flöden: nyhetsbrev, larm, inloggningen;Vault=https://vault.jarllindquist.com/ui/|Hemligheterna för deployerna;PocketBase=https://pb.jarllindquist.com/_/|Databasen för LinkedIn-bilderna
+      # Quoted: a ": " in a description would otherwise break the YAML.
+      - "TOOLS=HeimState=/heim/|Sensorerna hemma: läget nu, historik, larm och enheter;Grafana=/grafana/|Dashboards och loggar för servern;Prometheus=/prometheus/|Mätvärden och larmregler;n8n=/n8n/|Flöden: nyhetsbrev, larm, inloggningen;Vault=https://vault.jarllindquist.com/ui/|Hemligheterna för deployerna;PocketBase=https://pb.jarllindquist.com/_/|Databasen för LinkedIn-bilderna"
       # Apps with a login page of their own ("/prefix=/page;..."): not logged in -> that page, not /auth/login
       - LOGIN_PAGES=/heim=/heim/login
       # Machine access without Telegram (see app.py): name|sha256 of the token|expires|host|prefix.
