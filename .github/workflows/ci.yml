@@ -36,7 +36,7 @@ jobs:
       - name: The production compose file is valid
         run: |
           docker compose -f docker-compose.prod.yml config -q
-          docker compose -f docker-compose.prod.yml config | grep -q 'TOOLS: HeimState='
+          docker compose -f docker-compose.prod.yml config | grep -q 'HeimState=/heim/|Sensorerna'
       - name: Build the image
         run: docker build -t auth-gateway:ci .
       # Started the way production runs it: read-only file system, /tmp in memory
